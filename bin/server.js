@@ -84,7 +84,7 @@ http.createServer(function(req, res) {
   var queries = url.parse(req.url, true).query;
 
   if (queries && queries.url) {
-    collapsify(queries.url, argv).subscribe(function(result) {
+    var subscription = collapsify(queries.url, argv).subscribe(function(result) {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.end(result);
@@ -119,6 +119,11 @@ http.createServer(function(req, res) {
         url: queries.url,
         err: err
       }, 'Collapsify failed.');
+    });
+
+    req.on('close', function() {
+      subscription.dispose();
+      logger.debug('client discconected');
     });
   }
 }).listen(socket || argv.port);
