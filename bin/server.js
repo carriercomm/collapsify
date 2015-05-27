@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 'use strict';
+var errors = require('errors');
 if (process.env.DEBUG) {
   var Rx = require('rx');
   Rx.config.longStackSupport = true;
+  errors.stacks(true);
 }
 
 var VERSION = require('../lib/version');
 var http = require('http');
-var httperr = require('httperr');
 var url = require('url');
 var collapsify = require('../');
 var systemdSocket = require('systemd-socket');
@@ -80,50 +81,84 @@ if (socket) {
   fds.nonblock(socket.fd);
 }
 
+function json(res, status, data) {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.end(JSON.stringify(data));
+}
+
 http.createServer(function(req, res) {
+  logger.info({
+    req: req
+  });
+
+  if (req.method !== 'GET') {
+    json(res, 405, {
+      errors: [
+        new errors.Http405Error('Method "' + req.method + '" Not Allowed"')
+      ]
+    });
+
+    logger.info({
+      res: res
+    });
+
+    return;
+  }
+
   var queries = url.parse(req.url, true).query;
 
-  if (queries && queries.url) {
-    var subscription = collapsify(queries.url, argv).subscribe(function(result) {
-      res.statusCode = 200;
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(result);
-
-      logger.info({
-        url: queries.url
-      }, 'Collapsify succeeded.');
-    }, function(err) {
-      if (err instanceof httperr.HttpError) {
-        res.statusCode = 502;
-        res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.end(JSON.stringify({
-          errors: [{
-            code: err.statusCode,
-            message: err.title + ': ' + err.message
-          }]
-        }));
-      } else {
-        res.statusCode = 500;
-        res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.end(JSON.stringify({
-          errors: [
-            {
-              code: err.code || 999,
-              message: process.env.NODE_ENV === 'development' ? err.message : 'An unknown error occured.'
-            }
-          ]
-        }));
-      }
-
-      logger.info({
-        url: queries.url,
-        err: err
-      }, 'Collapsify failed.');
+  if (queries && !queries.url) {
+    json(res, 422, {
+      errors: [
+        new errors.Http422Error('Query parameter "url" is requierd.')
+      ]
     });
 
-    req.on('close', function() {
-      subscription.dispose();
-      logger.debug('client discconected');
+    logger.info({
+      res: res
     });
+
+    return;
   }
+
+  var subscription = collapsify(queries.url, argv).subscribe(function(result) {
+
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(result);
+
+    logger.info({
+      url: queries.url,
+      res: res
+    }, 'Collapsify succeeded.');
+  }, function(err) {
+    if (err instanceof errors.HttpError) {
+      json(res, 502, {
+        errors: [
+          new errors.Http502Error({
+            cause: err
+          })
+        ]
+      });
+    } else {
+      json(res, 500, {
+        errors: [
+          new errors.Http500Error({
+            cause: err
+          })
+        ]
+      });
+    }
+
+    logger.info({
+      res: res,
+      err: err
+    }, 'Collapsify failed.');
+  });
+
+  req.on('close', function() {
+    subscription.dispose();
+    logger.debug('client discconected');
+  });
 }).listen(socket || argv.port);
